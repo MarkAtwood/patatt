@@ -205,6 +205,8 @@ To use the keyring with patatt or b4, configure the ``keyringsrc`` setting
         keyringsrc = ref:~/path/to/another/repo:refs/heads/main:.keys
         # Use a regular dir on disk
         keyringsrc = ~/git/korg-pgpkeys/.keyring
+        # Ask the git-vouch registry (openssh keys only)
+        keyringsrc = vouch:
 
 For b4, use the same configuration under the ``[b4]`` section.
 

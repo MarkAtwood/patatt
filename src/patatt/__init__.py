@@ -59,6 +59,8 @@ KEYCACHE: dict[
     str | bytes,
     bytes | tuple[SigningKey, bytes] | tuple[str, str] | None,
 ] = {}
+# 'git vouch keys' output per identity, split into fields
+VOUCHCACHE: dict[str, list[list[str]]] = {}
 # Quick cache for config settings
 CONFIGCACHE: dict[str, GitConfigType] = {}
 
@@ -1229,6 +1231,36 @@ def make_byhash_path(keytype: str, identity: str, selector: str) -> Path:
     return Path('by-hash', prefix, remainder)
 
 
+def _get_vouch_key(keytype: str, identity: str, selector: str) -> tuple[bytes, str]:
+    """Look up an openssh key in the git-vouch registry.
+
+    Runs 'git vouch keys <identity>', which prints one
+    '<selector> <type> <base64>' line per current key of the person
+    whose endorsed email is identity, and nothing if there is none.
+
+    Raises:
+        KeyError: On any failure, so the next keyring source is tried.
+    """
+    if keytype != 'openssh':
+        raise KeyError(f'vouch: has no {keytype} keys')
+    if identity not in VOUCHCACHE:
+        try:
+            ecode, out, err = _run_command(['git', 'vouch', 'keys', '--', identity])
+        except OSError as ex:
+            ecode, out, err = 1, b'', str(ex).encode()
+        if ecode > 0 and err.strip():
+            logger.warning(
+                'vouch: git vouch keys failed: %s', err.decode(errors='replace').strip()
+            )
+        lines = out.decode(errors='replace').splitlines() if ecode == 0 else []
+        VOUCHCACHE[identity] = [line.split() for line in lines]
+    for fields in VOUCHCACHE[identity]:
+        if len(fields) >= 3 and fields[0].lower() == selector.lower():
+            keysrc = f'vouch:{identity}/{fields[0]}'
+            return f'{fields[1]} {fields[2]}'.encode(), keysrc
+    raise KeyError(f'vouch: no key {selector} for {identity}')
+
+
 def get_public_key(
     source: str, keytype: str, identity: str, selector: str
 ) -> tuple[bytes, str]:
@@ -1238,8 +1270,9 @@ def get_public_key(
     by-hash lookup if not found.
 
     Args:
-        source: Keyring source. Either a filesystem path or a git ref
-            in format 'ref:repo:refspec:subpath'.
+        source: Keyring source. Either a filesystem path, a git ref
+            in format 'ref:repo:refspec:subpath', or 'vouch:' for the
+            git-vouch registry.
         keytype: Key algorithm type ('ed25519', 'openpgp', 'openssh').
         identity: Signer identity in email format (local@domain).
         selector: Key selector for distinguishing multiple keys.
@@ -1253,6 +1286,13 @@ def get_public_key(
     """
     keypath = make_pkey_path(keytype, identity, selector)
     logger.debug('Looking for %s in %s', keypath, source)
+
+    if source.startswith('vouch:'):
+        if source != 'vouch:':
+            # git vouch keys only reads the copy that git vouch sync keeps
+            logger.warning('vouch: takes no registry path, ignoring %s', source)
+            raise KeyError(f'unsupported keyring source {source}')
+        return _get_vouch_key(keytype, identity, selector)
 
     # ref:refs/heads/someref:in-repo/path
     if source.startswith('ref:'):
@@ -1666,6 +1706,16 @@ def validate_message(
             if keysrc is None:
                 # Default keyring used
                 keysrc = f'(default keyring)/{signkey}'
+            if not keysrc.startswith('vouch:') and any(
+                src.startswith('vouch:') for src in sources
+            ):
+                logger.warning(
+                    'W: %s/%s verified via legacy keyring %s, not the vouch registry;'
+                    ' legacy keyrings stop working after the flag day late cutoff',
+                    i,
+                    s,
+                    keysrc,
+                )
             attestations.append((RES_VALID, i, signtime, keysrc, algo, errors))
         except NoKeyError:
             # Not in default keyring
