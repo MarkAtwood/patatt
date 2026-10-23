@@ -1711,7 +1711,7 @@ def validate_message(
             ):
                 logger.warning(
                     'W: %s/%s verified via legacy keyring %s, not the vouch registry;'
-                    ' legacy keyrings stop working after the flag day late cutoff',
+                    ' legacy keyrings stop working six months after flag day',
                     i,
                     s,
                     keysrc,
